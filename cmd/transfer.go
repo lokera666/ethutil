@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/ethereum/go-ethereum"
 	"log"
 	"math/big"
 	"os"
@@ -44,7 +45,8 @@ func validationTransferCmdOpts() bool {
 	return true
 }
 
-const gasUsedByTransferEth = 21000 // The gas used by any transfer is always 21000
+// https://docs.optimism.io/builders/tools/build/oracles#gas-oracle
+var l1GasPriceOracle = common.HexToAddress("0x420000000000000000000000000000000000000F")
 
 func getGasPrice(client *ethclient.Client) (*big.Int, error) {
 	var gasPrice *big.Int
@@ -59,7 +61,7 @@ func getGasPrice(client *ethclient.Client) (*big.Int, error) {
 
 	gasPrice, err := client.SuggestGasPrice(context.Background())
 
-	if globalOptNode == nodeMainnet {
+	if globalOptChain == nodeMainnet {
 		// in case of mainnet, get gap price from ethgasstation
 		gasPrice, err = getGasPriceFromEthGasStation()
 		if err != nil {
@@ -72,9 +74,9 @@ func getGasPrice(client *ethclient.Client) (*big.Int, error) {
 }
 
 var transferCmd = &cobra.Command{
-	Use:   "transfer target-address amount",
-	Short: "Transfer amount of eth to target-address",
-	Long: "Transfer amount of eth to target-address, special word `all` is valid amount. unit is ether, can be changed by --unit.",
+	Use:   "transfer <target-address> <amount>",
+	Short: "Transfer native token",
+	Long:  "Transfer AMOUNT of eth to TARGET-ADDRESS, special word `all` is valid amount. unit is ether, can be changed by --unit.",
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 1 {
 			return fmt.Errorf("requires target-address and amount")
@@ -124,20 +126,65 @@ var transferCmd = &cobra.Command{
 		var amountInWei decimal.Decimal
 		if transferAmt == "all" {
 			// transfer all balance (only reserve some gas just pay for this tx) to target address
-			fromAddr := extractAddressFromPrivateKey(buildPrivateKeyFromHex(globalOptPrivateKey))
+			fromAddr := extractAddressFromPrivateKey(hexToPrivateKey(globalOptPrivateKey))
+
+			// Get current balance
 			balance, err := globalClient.EthClient.BalanceAt(ctx, fromAddr, nil)
 			checkErr(err)
 
 			log.Printf("balance of %v is %v wei", fromAddr.String(), balance.String())
 
-			gasMayUsed := big.NewInt(0).Mul(gasPrice, big.NewInt(gasUsedByTransferEth))
+			var gasLimit = globalOptGasLimit
+			if globalOptGasLimit == 0 {
+				// If globalOptGasLimit is not specified, use the default value gasUsedByTransferEth
+				toAddr := common.HexToAddress(targetAddress)
+				estimateGasLimit, err := globalClient.EthClient.EstimateGas(context.Background(), ethereum.CallMsg{
+					To:    &toAddr,
+					Value: big.NewInt(0),
+					Data:  common.FromHex(transferHexData),
+				})
+				if err != nil {
+					log.Fatalf("EstimateGas fail: %w", err)
+				}
+				gasLimit = estimateGasLimit
+			}
+			gasMayUsed := big.NewInt(0).Mul(gasPrice, big.NewInt(int64(gasLimit)))
 
 			if gasMayUsed.Cmp(balance) > 0 {
 				log.Fatalf("insufficient balance %v, can not pay for gas %v", balance, gasMayUsed)
 			}
 
+			l1GasPriceOracleExisted, err := isContractAddress(globalClient.EthClient, l1GasPriceOracle)
+			if err != nil {
+				log.Fatalf("isContractAddress failed %v", err)
+			}
+			// If l1GasPriceOracle is existed in current chain, the current chain is probability L2 chain, and need L1 fee when submit tx
+			// We must subtract `L2 fee + L1 fee` if use want transfer 'all' native token
+			if l1GasPriceOracleExisted {
+				// Estimate L1 Fee
+				privateKey := hexToPrivateKey(globalOptPrivateKey)
+				fromAddress := extractAddressFromPrivateKey(privateKey)
+				toAddr := common.HexToAddress(targetAddress)
+				signedTx, err := BuildSignedTx(globalClient.EthClient, privateKey, &fromAddress, &toAddr, big.NewInt(0).Sub(balance, gasMayUsed), gasPrice, common.FromHex(transferHexData), nil)
+				if err != nil {
+					log.Fatalf("BuildSignedTx fail: %v", err)
+				}
+				rawTx, err := GenRawTx(signedTx)
+				if err != nil {
+					log.Fatalf("GenRawTx fail: %v", err)
+				}
+				l1Fee, err := getL1Fee(globalClient.RpcClient, rawTx)
+				if err != nil {
+					log.Fatalf("getL1Fee failed %v", err)
+				}
+				log.Printf("L2 fee %v", gasMayUsed.String())
+				log.Printf("L1 fee %v", l1Fee.String())
+				// L2 fee + L1 fee
+				gasMayUsed.Add(gasMayUsed, l1Fee)
+			}
+
 			amountBigInt := big.NewInt(0).Sub(balance, gasMayUsed)
-			amount = bigInt2Decimal(amountBigInt)
+			amount = bigIntToDecimal(amountBigInt)
 
 			amountInWei = amount
 		} else {
@@ -155,10 +202,23 @@ var transferCmd = &cobra.Command{
 
 func TransferHelper(rcpClient *rpc.Client, client *ethclient.Client, privateKeyHex string, toAddress string, amountInWei *big.Int, gasPrice *big.Int, data []byte) (string, error) {
 	log.Printf("transfer %v ether (%v wei) from %v to %v",
-		wei2Other(bigInt2Decimal(amountInWei), unitEther).String(),
+		wei2Other(bigIntToDecimal(amountInWei), unitEther).String(),
 		amountInWei.String(),
-		extractAddressFromPrivateKey(buildPrivateKeyFromHex(privateKeyHex)).String(),
+		extractAddressFromPrivateKey(hexToPrivateKey(privateKeyHex)).String(),
 		toAddress)
 	var toAddr = common.HexToAddress(toAddress)
-	return Transact(rcpClient, client, buildPrivateKeyFromHex(privateKeyHex), &toAddr, amountInWei, gasPrice, data)
+	return Transact(rcpClient, client, hexToPrivateKey(privateKeyHex), &toAddr, amountInWei, gasPrice, data)
+}
+
+// getL1Fee call contract function getL1Fee to get the L1 fee
+func getL1Fee(rcpClient *rpc.Client, rawTx string) (*big.Int, error) {
+	txInputData, err := buildTxInputData("getL1Fee(bytes)", []string{rawTx})
+	if err != nil {
+		return nil, err
+	}
+	output, err := Call(rcpClient, l1GasPriceOracle, txInputData)
+	if err != nil {
+		return nil, err
+	}
+	return new(big.Int).SetBytes(output), nil
 }

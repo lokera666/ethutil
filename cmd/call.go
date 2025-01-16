@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"io/ioutil"
 	"log"
 	"os"
 
@@ -22,8 +21,8 @@ func init() {
 }
 
 var callCmd = &cobra.Command{
-	Use:   "call contract-address 'function signature' arg1 arg2 ...",
-	Short: "Invokes the (paid) contract method",
+	Use:   "call <contract-address> 'function signature' arg1 arg2 ...",
+	Short: "Invoke the (paid) contract method",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		if !validationCallCmdOpts(args) {
@@ -49,7 +48,7 @@ var callCmd = &cobra.Command{
 		}
 
 		if callCmdABIFile != "" {
-			abiContent, err := ioutil.ReadFile(callCmdABIFile)
+			abiContent, err := os.ReadFile(callCmdABIFile)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -73,7 +72,7 @@ var callCmd = &cobra.Command{
 			var valueInWei = unify2Wei(value, callCmdTransferUnit)
 
 			var contract = common.HexToAddress(contractAddr)
-			tx, err := Transact(globalClient.RpcClient, globalClient.EthClient, buildPrivateKeyFromHex(globalOptPrivateKey), &contract, valueInWei.BigInt(), nil, txInputData)
+			tx, err := Transact(globalClient.RpcClient, globalClient.EthClient, hexToPrivateKey(globalOptPrivateKey), &contract, valueInWei.BigInt(), nil, txInputData)
 			checkErr(err)
 
 			log.Printf("transaction %s finished", tx)

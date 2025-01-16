@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/shopspring/decimal"
 	"github.com/spf13/cobra"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -33,7 +32,7 @@ func init() {
 }
 
 var deployCmd = &cobra.Command{
-	Use:   "deploy [constructor signature] arg1 arg2 ...",
+	Use:   "deploy <constructor-signature> [arg1 arg2 ...]",
 	Short: "Deploy contract",
 	Run: func(cmd *cobra.Command, args []string) {
 		if deployBinFile == "" && deploySrcFile == "" {
@@ -49,7 +48,7 @@ var deployCmd = &cobra.Command{
 		if deploySrcFile != "" { // source file provided
 			// compile source using solcjs, set deployABIFile, deployBinFile
 
-			dir, err := ioutil.TempDir("", "ethutil-deploy")
+			dir, err := os.MkdirTemp("", "ethutil-deploy")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -57,7 +56,7 @@ var deployCmd = &cobra.Command{
 
 			//log.Printf("solcjs output to dir %v", dir)
 
-			cmd := exec.Command("solcjs", "--base-path", ".", "--bin", "--abi", "--output-dir", dir, deploySrcFile)
+			cmd := exec.Command("solcjs", "--base-path", ".", "--include-path", "./node_modules", "--bin", "--abi", "--output-dir", dir, deploySrcFile)
 			log.Printf("executing command %v", cmd.String())
 			var out bytes.Buffer
 			var stderr bytes.Buffer
@@ -100,7 +99,7 @@ var deployCmd = &cobra.Command{
 				inputArgData = args[1:]
 			}
 		} else { // abi file provided
-			abiContent, err := ioutil.ReadFile(deployABIFile)
+			abiContent, err := os.ReadFile(deployABIFile)
 			checkErr(err)
 
 			funcSignature, err = extractFuncDefinition(string(abiContent), "constructor")
@@ -110,7 +109,7 @@ var deployCmd = &cobra.Command{
 			inputArgData = args[0:]
 		}
 
-		bytecode, err := ioutil.ReadFile(deployBinFile)
+		bytecode, err := os.ReadFile(deployBinFile)
 		checkErr(err)
 
 		var bytecodeHex = strings.TrimSpace(string(bytecode))
@@ -134,7 +133,7 @@ var deployCmd = &cobra.Command{
 		var value = decimal.RequireFromString(deployValue)
 		var valueInWei = unify2Wei(value, deployValueUnit)
 
-		tx, err := Transact(globalClient.RpcClient, globalClient.EthClient, buildPrivateKeyFromHex(globalOptPrivateKey), nil, valueInWei.BigInt(), nil, txData)
+		tx, err := Transact(globalClient.RpcClient, globalClient.EthClient, hexToPrivateKey(globalOptPrivateKey), nil, valueInWei.BigInt(), nil, txData)
 		checkErr(err)
 
 		log.Printf("transaction %s finished", tx)
@@ -144,7 +143,7 @@ var deployCmd = &cobra.Command{
 
 // findContractName find last contract name in source file
 func findContractName(deploySrcFile string) string {
-	srcContent, err := ioutil.ReadFile(deploySrcFile)
+	srcContent, err := os.ReadFile(deploySrcFile)
 	checkErr(err)
 
 	re := regexp.MustCompile(`(?m)^[ ]*contract[ ]+[a-zA-Z0-9_]+ `)
@@ -153,7 +152,7 @@ func findContractName(deploySrcFile string) string {
 		return ""
 	}
 
-	lastContract := matches[len(matches) - 1]
+	lastContract := matches[len(matches)-1]
 	re = regexp.MustCompile(`^[ ]*contract[ ]+(?P<Name>[a-zA-Z0-9_]+) `)
 	matches = re.FindStringSubmatch(lastContract)
 	nameIndex := re.SubexpIndex("Name")

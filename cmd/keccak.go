@@ -6,7 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/cobra"
-	"io/ioutil"
+	"io"
 	"os"
 )
 
@@ -17,8 +17,8 @@ func init() {
 }
 
 var keccakCmd = &cobra.Command{
-	Use:   "keccak [flags] [file] ...",
-	Short: "Compute keccak hash",
+	Use:   "keccak [flags] <file> ...",
+	Short: "Compute keccak hash, read data from file or stdin (file name -)",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			// if no file specified, read from stdin
@@ -37,10 +37,10 @@ func computeAndOutputKeccak(f string) {
 	var err error
 
 	if f == "-" {
-		fileContent, err = ioutil.ReadAll(os.Stdin)
+		fileContent, err = io.ReadAll(os.Stdin)
 		checkErr(err)
 	} else {
-		fileContent, err = ioutil.ReadFile(f)
+		fileContent, err = os.ReadFile(f)
 		checkErr(err)
 	}
 
